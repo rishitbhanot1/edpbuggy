@@ -1,0 +1,28 @@
+Send 'G' → START
+
+↓
+Buggy exits parking lane
+
+↓
+Follows main track (line following)
+
+↓
+Gantry detection:
+    G1 → stop 1s
+    G2 → stop 1s
+    G3 → stop 1s
+
+↓
+Black-black detection triggers parking sequence
+
+↓
+Executes parking logic (timed + slight bias)
+
+↓
+Smoothly enters parking lane
+
+↓
+Buggy stops
+
+↓
+END → Buggy Parked
