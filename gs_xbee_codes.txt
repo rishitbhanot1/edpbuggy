@@ -1,0 +1,9 @@
+silver
+S1 = buggy 1
+S2 = buggy 2
+R1 = resume buggy 1
+
+gold
+S1n = buggy 1 moving n loops
+S2n = buggy to moving n loops
+R1 = resume buggy 1
