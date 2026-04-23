@@ -1,0 +1,47 @@
+Send S1n → START BUGGY 1
+
+↓
+Buggy 1 exits parking → moves clockwise
+
+↓
+Buggy 1 reaches center gantry (G3)
+→ Stops
+→ <B1_WAIT_CENTER>
+
+↓
+Send S2n → START BUGGY 2
+
+↓
+Buggy 2 moves anticlockwise:
+    Right gantry → continue
+    Left gantry → LOOP COUNT++
+
+↓
+Repeat until:
+    completedLoops == n
+
+↓
+Buggy 2:
+    <B2_PARK_ARM>
+    enters parking (LEFT bias)
+    <B2_PARKED>
+
+↓
+Send R1 → RESUME BUGGY 1
+
+↓
+Buggy 1 continues clockwise:
+    Right gantry → LOOP COUNT++
+
+↓
+Repeat until:
+    completedLoops == n
+
+↓
+Buggy 1:
+    <B1_PARK_ARM>
+    enters parking (RIGHT bias)
+    <B1_PARKED>
+
+↓
+END → Both Buggies Parked
