@@ -1,0 +1,344 @@
+// =====================================
+// BUGGY 1 - SILVER CHALLENGE
+// Clockwise
+// Start first
+// Stop at center/lower gantry and wait
+// Resume only on XBee command R1
+// Then continue and park by taking RIGHT inward parking lane
+// =====================================
+
+// ---------- MOTOR PINS ----------
+const int L1 = 5;
+const int L2 = 6;
+const int R1 = 7;
+const int R2 = 8;
+
+// ---------- LINE SENSORS ----------
+const int LS = A0;
+const int RS = A1;
+
+// ---------- GANTRY RECEIVER ----------
+const int gantryPin = 4;   // receiver / photodiode circuit
+
+// ---------- ULTRASONIC ----------
+const int trigPin = 13;
+const int echoPin = 12;
+
+// ---------- CONSTANTS ----------
+const int OBSTACLE_STOP_DISTANCE_CM = 15;
+const unsigned long GANTRY_STOP_DELAY = 1000;
+
+// tune on real hardware
+const unsigned long EXIT_FORWARD_TIME = 220;
+const unsigned long EXIT_RIGHT_TIME   = 250;
+const unsigned long PARK_SETTLE_TIME  = 800;
+
+// gantry pulse ranges - tune if needed
+const unsigned long G1_MIN = 500;
+const unsigned long G1_MAX = 1500;   // left
+const unsigned long G2_MIN = 1500;
+const unsigned long G2_MAX = 2500;   // right
+const unsigned long G3_MIN = 2500;
+const unsigned long G3_MAX = 3500;   // center/lower
+
+// ---------- STATES ----------
+enum BuggyState {
+  WAIT_START,
+  EXIT_PARKING,
+  FOLLOW_TO_CENTER,
+  WAIT_AT_CENTER,
+  FOLLOW_TO_RIGHT_PARK,
+  PARKING_RIGHT,
+  PARKED
+};
+
+BuggyState state = WAIT_START;
+
+// ---------- GLOBALS ----------
+bool obstacleFlag = false;
+bool gantryLatched = false;
+bool parked = false;
+
+unsigned long stateStartTime = 0;
+long duration = 0;
+int distanceCm = 0;
+
+int gantryCount = 0;
+int currentGantryId = 0;
+
+bool resumedOnce = false;
+bool rightParkArmed = false;
+
+// ---------- PROTOTYPES ----------
+void stopMotors();
+void forward();
+void turnLeft();
+void turnRight();
+
+void followCW(int left, int right);
+void biasRightFollow(int left, int right);
+
+int getDistance();
+void checkObstacle();
+int detectGantryId();
+void checkGantry();
+void handleSerial();
+void sendMsg(const char* msg);
+
+// ---------- SETUP ----------
+void setup() {
+  pinMode(L1, OUTPUT);
+  pinMode(L2, OUTPUT);
+  pinMode(R1, OUTPUT);
+  pinMode(R2, OUTPUT);
+
+  pinMode(LS, INPUT_PULLUP);
+  pinMode(RS, INPUT_PULLUP);
+
+  pinMode(gantryPin, INPUT);
+
+  pinMode(trigPin, OUTPUT);
+  pinMode(echoPin, INPUT);
+
+  Serial.begin(9600);
+
+  stopMotors();
+}
+
+// ---------- LOOP ----------
+void loop() {
+  handleSerial();
+
+  if (parked) {
+    stopMotors();
+    return;
+  }
+
+  if (state == WAIT_START) {
+    stopMotors();
+    return;
+  }
+
+  checkObstacle();
+  if (obstacleFlag) return;
+
+  checkGantry();
+
+  int left = digitalRead(LS);
+  int right = digitalRead(RS);
+
+  switch (state) {
+    case EXIT_PARKING:
+      // smooth exit from parking to main track, clockwise
+      if (millis() - stateStartTime < EXIT_FORWARD_TIME) {
+        forward();
+      } else if (millis() - stateStartTime < EXIT_FORWARD_TIME + EXIT_RIGHT_TIME) {
+        turnRight();
+      } else {
+        state = FOLLOW_TO_CENTER;
+      }
+      break;
+
+    case FOLLOW_TO_CENTER:
+      followCW(left, right);
+      break;
+
+    case WAIT_AT_CENTER:
+      stopMotors();
+      break;
+
+    case FOLLOW_TO_RIGHT_PARK:
+      if (rightParkArmed) {
+        state = PARKING_RIGHT;
+        stateStartTime = millis();
+      } else {
+        followCW(left, right);
+      }
+      break;
+
+    case PARKING_RIGHT:
+      // gentle deviation right using line sensors
+      if (millis() - stateStartTime < PARK_SETTLE_TIME) {
+        biasRightFollow(left, right);
+      } else {
+        stopMotors();
+        parked = true;
+        state = PARKED;
+        sendMsg("<B1_PARKED>");
+      }
+      break;
+
+    case PARKED:
+      stopMotors();
+      break;
+
+    default:
+      stopMotors();
+      break;
+  }
+}
+
+// ---------- SERIAL / XBEE ----------
+void handleSerial() {
+  if (!Serial.available()) return;
+
+  String cmd = Serial.readStringUntil('\n');
+  cmd.trim();
+
+  if (cmd == "S1" && state == WAIT_START) {
+    state = EXIT_PARKING;
+    stateStartTime = millis();
+    sendMsg("<B1_START>");
+  } else if (cmd == "R1" && state == WAIT_AT_CENTER) {
+    resumedOnce = true;
+    state = FOLLOW_TO_RIGHT_PARK;
+    sendMsg("<B1_RESUME>");
+  }
+}
+
+void sendMsg(const char* msg) {
+  Serial.println(msg);
+}
+
+// ---------- OBSTACLE ----------
+void checkObstacle() {
+  distanceCm = getDistance();
+
+  if (distanceCm > 0 && distanceCm <= OBSTACLE_STOP_DISTANCE_CM) {
+    if (!obstacleFlag) {
+      obstacleFlag = true;
+      stopMotors();
+      sendMsg("<B1_OBS>");
+    }
+  } else {
+    if (obstacleFlag) {
+      obstacleFlag = false;
+      sendMsg("<B1_CLEAR>");
+    }
+  }
+}
+
+int getDistance() {
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+
+  duration = pulseIn(echoPin, HIGH, 20000);
+  if (duration == 0) return 0;
+
+  return duration * 0.034 / 2;
+}
+
+// ---------- GANTRY ----------
+void checkGantry() {
+  int gState = digitalRead(gantryPin);
+
+  if (gState == HIGH && !gantryLatched) {
+    int gId = detectGantryId();
+    if (gId != 0) {
+      gantryLatched = true;
+      currentGantryId = gId;
+      gantryCount++;
+
+      stopMotors();
+      delay(GANTRY_STOP_DELAY);
+
+      // G1 = left, G2 = right, G3 = center/lower
+      if (gId == 1) {
+        sendMsg("<B1_G1>");
+      } else if (gId == 2) {
+        sendMsg("<B1_G2>");
+      } else if (gId == 3) {
+        sendMsg("<B1_G3_CENTER>");
+      }
+
+      // Buggy 1 waits at center/lower gantry before Buggy 2 starts
+      if (!resumedOnce && gId == 3 && state == FOLLOW_TO_CENTER) {
+        state = WAIT_AT_CENTER;
+        sendMsg("<B1_G3_CENTER_WAIT>");
+      }
+
+      // After resume, when Buggy 1 reaches right gantry, arm parking
+      if (resumedOnce && gId == 2 && state == FOLLOW_TO_RIGHT_PARK) {
+        rightParkArmed = true;
+        sendMsg("<B1_PARK_ARM>");
+      }
+    }
+  }
+
+  if (gState == LOW) {
+    gantryLatched = false;
+  }
+}
+
+int detectGantryId() {
+  unsigned long d = pulseIn(gantryPin, HIGH, 5000);
+
+  if (d > G1_MIN && d < G1_MAX) return 1; // left
+  if (d >= G2_MIN && d < G2_MAX) return 2; // right
+  if (d >= G3_MIN && d < G3_MAX) return 3; // center/lower
+
+  return 0;
+}
+
+// ---------- LINE FOLLOW ----------
+void followCW(int left, int right) {
+  // Assumed polarity from your earlier code:
+  // 1,1 -> forward
+  // 1,0 -> left
+  // 0,1 -> right
+  // 0,0 -> forward across thick line/junction
+  if (left == 1 && right == 1) {
+    forward();
+  } else if (left == 1 && right == 0) {
+    turnLeft();
+  } else if (left == 0 && right == 1) {
+    turnRight();
+  } else {
+    forward();
+  }
+}
+
+void biasRightFollow(int left, int right) {
+  // Prefer the right branch gently
+  if (left == 1 && right == 1) {
+    turnRight();
+  } else if (left == 1 && right == 0) {
+    turnLeft();
+  } else if (left == 0 && right == 1) {
+    turnRight();
+  } else {
+    forward();
+  }
+}
+
+// ---------- MOTOR CONTROL ----------
+void forward() {
+  digitalWrite(L1, HIGH);
+  digitalWrite(L2, LOW);
+  digitalWrite(R1, LOW);
+  digitalWrite(R2, HIGH);
+}
+
+void turnRight() {
+  digitalWrite(L1, HIGH);
+  digitalWrite(L2, LOW);
+  digitalWrite(R1, LOW);
+  digitalWrite(R2, LOW);
+}
+
+void turnLeft() {
+  digitalWrite(L1, LOW);
+  digitalWrite(L2, LOW);
+  digitalWrite(R1, LOW);
+  digitalWrite(R2, HIGH);
+}
+
+void stopMotors() {
+  digitalWrite(L1, LOW);
+  digitalWrite(L2, LOW);
+  digitalWrite(R1, LOW);
+  digitalWrite(R2, LOW);
+}
