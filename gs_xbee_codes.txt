@@ -1,3 +1,6 @@
+bronze
+G = buggy starts
+
 silver
 S1 = buggy 1
 S2 = buggy 2
